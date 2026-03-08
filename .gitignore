@@ -1,0 +1,18 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Gradio
+.gradio/
+
+# Compiled outputs
+a.out
+generated/
+
+# OS files
+.DS_Store
+Thumbs.db
