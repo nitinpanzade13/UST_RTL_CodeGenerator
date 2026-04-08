@@ -1,26 +1,3 @@
-# import re
-
-
-# def validate_rtl(code):
-
-#     issues = []
-
-#     if "module" not in code:
-#         issues.append("Missing 'module' declaration.")
-
-#     if "endmodule" not in code:
-#         issues.append("Missing 'endmodule'.")
-
-#     if re.search(r"\balways\b", code) is None:
-#         issues.append("No always block detected.")
-
-#     if re.search(r";\s*$", code, re.MULTILINE) is None:
-#         issues.append("Possible missing semicolons.")
-
-#     if len(issues) == 0:
-#         return "✅ RTL looks syntactically reasonable."
-
-#     return "⚠ Issues detected:\n" + "\n".join(issues)
 import subprocess
 import tempfile
 import os
@@ -63,7 +40,6 @@ def compile_rtl(code):
 
     finally:
         os.remove(filename)
-
 
 # ==============================
 # 3. Icarus Linter (-Wall)
@@ -122,3 +98,141 @@ def run_verilator_lint(code):
 
     finally:
         os.remove(filename)
+
+
+# ==============================
+# 5. Detect Issues
+# ==============================
+def detect_lint_errors(lint_output):
+    keywords = [
+        "out of range",
+        "out-of-range",
+        "width mismatch",
+        "truncated",
+        "overflow",
+        "bit select",
+        "implicit",
+        "unused",
+        "undriven"
+    ]
+
+    issues = []
+
+    for line in lint_output.lower().split("\n"):
+        if any(k in line for k in keywords):
+            issues.append(line.strip())
+
+    return list(set(issues))  # remove duplicates
+
+
+# ==============================
+# 6. Severity Classification
+# ==============================
+def classify_severity(issues):
+    classified = []
+
+    for issue in issues:
+        issue_lower = issue.lower()
+
+        if any(k in issue_lower for k in [
+            "out of range",
+            "width mismatch",
+            "truncated",
+            "overflow",
+            "bit select"
+        ]):
+            classified.append(("CRITICAL", issue))
+
+        elif any(k in issue_lower for k in [
+            "unused",
+            "implicit",
+            "undriven"
+        ]):
+            classified.append(("WARNING", issue))
+
+        else:
+            classified.append(("INFO", issue))
+
+    return classified
+
+
+# ==============================
+# 7. Build Correction Prompt
+# ==============================
+def build_correction_prompt(original_prompt, rtl_code, issues):
+    issues_text = "\n".join(issues)
+
+    return f"""
+You are an expert Verilog RTL designer.
+
+Task:
+{original_prompt}
+
+The following RTL has hardware-critical issues detected by linters:
+
+=== LINTER WARNINGS ===
+{issues_text}
+
+=== INCORRECT RTL ===
+{rtl_code}
+
+=== FIXING RULES ===
+- Do NOT access out-of-range bits
+- Fix all width mismatches
+- Do NOT truncate carry bits
+- Remove unused signals
+- For adders, ALWAYS use:
+  {{cout, sum}} = a + b + cin;
+- Ensure bit-width correctness everywhere
+- Output ONLY corrected Verilog code
+- Do NOT add explanations
+
+=== CORRECTED RTL ===
+"""
+
+
+# ==============================
+# 8. Combined Validation (FINAL)
+# ==============================
+def validate_rtl_full(code):
+    # Compile Check
+    compile_ok, compile_msg = compile_rtl(code)
+
+    # Run both linters
+    iverilog_out = run_linter(code)
+    verilator_out = run_verilator_lint(code)
+
+    combined_output = iverilog_out + "\n" + verilator_out
+
+    # Detect issues
+    issues = detect_lint_errors(combined_output)
+
+    # Classify severity
+    classified = classify_severity(issues)
+
+    # Check critical
+    has_critical = any(level == "CRITICAL" for level, _ in classified)
+
+    return {
+        "compile_success": compile_ok,
+        "compile_message": compile_msg,
+        "lint_output": combined_output,
+        "lint_issues": issues,
+        "severity": classified,
+        "has_critical": has_critical,
+        "is_clean": compile_ok and not has_critical
+    }
+
+
+# ==============================
+# 9. Backward Compatibility
+# ==============================
+def validate_rtl(code):
+    result = validate_rtl_full(code)
+
+    if result["compile_success"]:
+        if result["lint_issues"]:
+            return "⚠️ LINT Issues:\n" + "\n".join(result["lint_issues"])
+        return "✅ RTL compiled successfully"
+
+    return f"❌ Compilation Error:\n{result['compile_message']}"
