@@ -25,17 +25,20 @@ def load_model():
 
     print("Loading base model (4-bit)...")
     bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"
-    )
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+    llm_int8_enable_fp32_cpu_offload=True
+)
 
     model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
         quantization_config=bnb_config,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+        max_memory={0: "5GB", "cpu": "16GB"}
     )
 
     print("Loading LoRA adapter...")
