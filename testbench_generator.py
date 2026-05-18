@@ -1,4 +1,103 @@
+import os
+import re
+import requests
 
+# ==============================
+# TIER 1 — Groq API Testbench
+# ==============================
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL   = "llama-3.3-70b-versatile"
+
+def generate_testbench_with_groq(rtl_code):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        print("❌ GROQ_API_KEY not set")
+        return ""
+
+    module_match = re.search(r"\bmodule\s+(\w+)\b", rtl_code)
+    dut_name = module_match.group(1) if module_match else "dut"
+
+    prompt = f"""You are an expert Verilog verification engineer.
+
+Write a complete self-checking Verilog testbench for this RTL module:
+
+{rtl_code}
+
+STRICT RULES:
+- Module name must be exactly: tb
+- Declare ALL integer variables at module level before any initial/always block
+- For sequential designs with clock:
+    * Declare clk as reg at module level
+    * Generate clock in a separate always block: always #5 clk = ~clk;
+    * Initialize clk in a separate initial block: initial begin clk = 0; end
+    * Apply stimulus and checks in a SEPARATE initial block
+    * Use clock period of 10ns total (#5 high, #5 low)
+    * After reset deasserts, wait for @(posedge clk) before checking outputs
+    * Always synchronize checks to posedge clk, never check combinationally
+    * After applying reset or any input change, always wait for TWO @(posedge clk) before checking output
+    * One @(posedge clk) for the input to register, one for output to settle
+    * Never check output on the same @(posedge clk) where input changed
+- Instantiate {dut_name} with named port mapping
+- Include $dumpfile("temp/wave.vcd") and $dumpvars(0, tb)
+- Use integer error_count declared at MODULE level
+- Increment error_count on every mismatch
+- Use $finish to end simulation
+- Print FINAL_RESULT: PASS if error_count==0 else FINAL_RESULT: FAIL
+- Return ONLY Verilog code, no explanation, no markdown"""
+
+    try:
+        response = requests.post(
+            GROQ_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 2000,
+                "temperature": 0.1
+            },
+            timeout=60
+        )
+        response.raise_for_status()
+        tb_code = response.json()["choices"][0]["message"]["content"]
+
+        # Clean markdown fences
+        tb_code = re.sub(r"```verilog|```", "", tb_code).strip()
+
+        # Clean DeepSeek thinking tags
+        tb_code = re.sub(r"<think>[\s\S]*?</think>", "", tb_code).strip()
+
+        return tb_code
+
+    except Exception as e:
+        print(f"❌ Groq API error: {e}")
+        return ""
+
+
+def validate_groq_tb(tb_code, module_name):
+    """Basic structural validation of Groq output."""
+    if not tb_code:
+        return False
+    has_module    = re.search(r"\bmodule\s+\w+\b", tb_code) is not None
+    has_endmodule = "endmodule" in tb_code
+    has_dut       = re.search(rf"\b{re.escape(module_name)}\b", tb_code) is not None
+    has_final     = "FINAL_RESULT" in tb_code
+    is_substantial = len(tb_code) > 200 and tb_code.count("\n") > 10
+
+    print(f"   module:       {has_module}")
+    print(f"   endmodule:    {has_endmodule}")
+    print(f"   DUT ref:      {has_dut}")
+    print(f"   FINAL_RESULT: {has_final}")
+    print(f"   substantial:  {is_substantial}")
+
+    return has_module and has_endmodule and has_dut and is_substantial
+
+
+# ==============================
+# TIER 2 — Rule-Based Testbench
+# ==============================
 
 # # ==============================
 # # Testbench Generator (SELF-CHECKING + VCD)
@@ -145,6 +244,41 @@ def generate_testbench(module_name, inputs, outputs, bit_widths, logic_type):
     # TEST LOGIC
     # ==========================
     tb += "\ninteger i;\ninteger errors = 0;\n\n"
+    
+    # ==========================
+    # CLOCK GENERATION (for sequential logic)
+    # ==========================
+    if logic_type == "COUNTER":
+        # Extract signal names
+        clk_sig = None
+        reset_sig = None
+        count_sig = None
+        
+        for inp in inputs:
+            if 'clk' in inp.lower():
+                clk_sig = inp
+            if 'reset' in inp.lower() or 'rst' in inp.lower():
+                reset_sig = inp
+        
+        for out in outputs:
+            if 'count' in out.lower() or 'q' in out.lower():
+                count_sig = out
+        
+        # Fallback
+        clk_sig = clk_sig or (inputs[0] if inputs else 'clk')
+        reset_sig = reset_sig or (inputs[1] if len(inputs) > 1 else 'reset')
+        count_sig = count_sig or (outputs[0] if outputs else 'count')
+        
+        # Generate clock at module level (not inside initial)
+        tb += f"""
+// Clock generation
+initial begin
+    {clk_sig} = 0;
+    forever #5 {clk_sig} = ~{clk_sig};
+end
+
+"""
+    
     tb += "initial begin\n"
 
     tb += """
@@ -157,9 +291,48 @@ def generate_testbench(module_name, inputs, outputs, bit_widths, logic_type):
     tb += "    #1;\n\n"
 
     # ==========================
+    # COUNTER TESTCASES
+    # ==========================
+    if logic_type == "COUNTER":
+        clk_sig = None
+        reset_sig = None
+        
+        for inp in inputs:
+            if 'clk' in inp.lower():
+                clk_sig = inp
+            if 'reset' in inp.lower() or 'rst' in inp.lower():
+                reset_sig = inp
+        
+        clk_sig = clk_sig or (inputs[0] if inputs else 'clk')
+        reset_sig = reset_sig or (inputs[1] if len(inputs) > 1 else 'reset')
+        
+        tb += f"""
+    // Test 1: Reset
+    {reset_sig} = 1;
+    #10;
+    {reset_sig} = 0;
+    #10;
+    
+    // Test 2: Count up
+    repeat(20) @(posedge {clk_sig});
+    
+    // Test 3: Reset during counting
+    {reset_sig} = 1;
+    #10;
+    {reset_sig} = 0;
+    #10;
+    
+    // Test 4: More counting
+    repeat(10) @(posedge {clk_sig});
+    
+    $display("FINAL_RESULT: PASS");
+    $finish;
+"""
+
+    # ==========================
     # ADDER
     # ==========================
-    if logic_type == "ADDER":
+    elif logic_type == "ADDER":
         tb += """
     for (i = 0; i < 512; i = i + 1) begin
         {A, B, Cin} = i;
@@ -228,7 +401,7 @@ def generate_testbench(module_name, inputs, outputs, bit_widths, logic_type):
             #1;
 
             case ({sel_sig})
-                2'b00: if ({out_sig} !== {in_sig}[0]) errors = errors + 1;
+                 2'b00: if ({out_sig} !== {in_sig}[0]) errors = errors + 1;
                 2'b01: if ({out_sig} !== {in_sig}[1]) errors = errors + 1;
                 2'b10: if ({out_sig} !== {in_sig}[2]) errors = errors + 1;
                 2'b11: if ({out_sig} !== {in_sig}[3]) errors = errors + 1;

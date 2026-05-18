@@ -69,7 +69,7 @@ def create_waveform_chart(vcd_path):
 
         offset += 2
 
-    plt.title("📉 Digital Waveform")
+    plt.title("Digital Waveform")
     plt.xlabel("Time")
     plt.yticks([])
 
@@ -230,7 +230,7 @@ with gr.Blocks(title="AI RTL Generator") as demo:
 
         # Waveform
         with gr.Column(elem_classes="card"):
-            waveform_plot = gr.Plot(label="📉 Waveform Viewer")
+            waveform_plot = gr.Plot(label="Waveform Viewer")
 
         # Outputs
         with gr.Column(elem_classes="card"):

@@ -12,6 +12,11 @@ __pycache__/
 # Compiled outputs
 a.out
 generated/
+temp/
+*.vvp
+*.vcd
+test_results.json
+compile_accuracy_results.json
 
 # OS files
 .DS_Store
